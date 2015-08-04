@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>InconTRAMi</title>
+    <meta name="viewport" content="initial-scale=1.0, user-scalable=no" />
+    <style type="text/css">
+      html { height: 100% }
+      body { height: 100%; margin: 0; padding: 0 }
+      #map-canvas { height: 100%; width: 90%; }
+    </style>
+    <script src="fermate_atm.js" type="text/javascript"></script>
+ 
+    <script type="text/javascript" src="https://maps.googleapis.com/maps/api/js?v=3.16&key=AIzaSyBe0-llikzU2SSyQrWSf6-Q0zSrfonjaMQ&sensor=true&libraries=geometry"></script>
+    <script type="text/javascript" src="http://google-maps-utility-library-v3.googlecode.com/svn/tags/markerwithlabel/1.1.9/src/markerwithlabel_packed.js"></script>
+    <script type="text/javascript">
+
+      var geocoder; 
+      var map;
+      var player;
+      var playerCounter = 0;
+      var playerMax = 2;
+      window.onload = initialize;
+      var linee;
+      var lineeCache = [];
+	var cercaStart, cercaEnd, cercaInc;
+	var matrice;
+
+	var secondiAlMetroPiedi = (3600 / 4000);
+	var secondiAlMetroTram = (3600 / 35000);
+	var secondiAFermata = 60;
+
+	function abs(x) {
+	  if (x >= 0) {
+	    return x;
+	  } else {
+	    return -x;
+	  }
+	}
+      function initialize() {
+	geocoder = new google.maps.Geocoder();
+        var mapOptions = {
+          center: new google.maps.LatLng(45.46407, 9.171906),
+          zoom: 13
+        };
+        map = new google.maps.Map(document.getElementById("map-canvas"),
+            mapOptions);
+	getLinee();
+
+	cercaStart = new google.maps.LatLng(45.4370084818025, 9.13340663947506); /* bottom, left */
+	cercaEnd = new google.maps.LatLng(45.5036729479106, 9.22109960492318); /* top, right */
+	cercaInc = 0.003;
+
+      }
+
+    function loadScript() {
+      var script = document.createElement('script');
+      script.type = 'text/javascript';
+      script.src = 'https://maps.googleapis.com/maps/api/js?v=3.16&key=AIzaSyBe0-llikzU2SSyQrWSf6-Q0zSrfonjaMQ&sensor=true&callback=initialize&libraries=geometry';
+      document.body.appendChild(script);
+
+    }
+
+    function getRouteCallback(results, status) {
+	if(status != google.maps.GeocoderStatus.OK) {
+		alert("Errore: " + status);
+		return;
+	}
+	var marker = new google.maps.Marker({
+            map: map,
+            position: results[0].geometry.location
+        });
+	player[playerCounter] = results[0].geometry.location;
+	playerCounter++;
+	if(playerCounter == playerMax)	
+		trovaLinee();
+    }
+
+	function distance(l1, l2) {
+		return google.maps.geometry.spherical.computeDistanceBetween(l1, l2);
+	}
+	function nascondiLinea(linea) {
+		lineeCache[linea.nome].setVisible(false);
+	}
+	function disegnaLinea(linea) {
+		if(linea == undefined) return;
+		var nome = linea.nome;
+		if(lineeCache[nome] != undefined) {
+			lineeCache[nome].setVisible(true);
+			return;
+		}
+		linea = linea.fermate;
+		var line = new Array();
+		for(var i=0; i < linea.length; i++) {
+			line.push(linea[i].latlng);
+		}
+		var path = new google.maps.Polyline({
+			path: line, 
+			geodesic: false,
+			strokeColor: '#AA00AA',
+			strokeOpacity: 1.0,
+			strokeWeight: 2
+		});
+		lineeCache[nome] = path;
+		path.setMap(map);
+	}
+	function getLineaIdx(nome) {
+		var idx = 0;
+		for(var j=0; j<=linee.length;) {
+			idx = j;
+			if(j == linee.length)
+				break;
+			if(linee[j].nome == nome)
+				break;
+			j++;
+		}
+		return idx;
+	}
+
+	function getLinee() {
+		linee = [];
+		for(var i=0; i<fermate.length; i++) {
+			var nome = fermate[i][2];
+			var lat = fermate[i][3];
+			var lng = fermate[i][4];
+
+			var idx = getLineaIdx(nome);
+
+			if(linee[idx] == undefined) {
+				linee[idx] = {};
+				linee[idx].nome = nome;
+				linee[idx].fermate = [];
+				linee[idx].salita = [];
+				linee[idx].discesa = {};
+				linee[idx].viaggio = [];
+			}
+			var last = linee[idx].fermate.length;
+			linee[idx].fermate[last] = {};
+			linee[idx].fermate[last].latlng = new google.maps.LatLng(lat, lng);
+		}
+	}
+
+	function calcolaDistanzaPuntoLinea(punto, linea) {
+		var min = 999999;
+		var idx = -1;
+		for(var i=0; i<linea.fermate.length; i++) {
+			var dist = distance(punto, linea.fermate[i].latlng);
+			if(dist < min) {
+				min = dist;
+				idx = i;
+			}
+		}
+		return {
+			dist: min,
+			costo: min * secondiAlMetroPiedi,
+			fermata: idx
+		};
+	}
+	
+	function calcolaCostoSalite() {
+		for(var i=0; i<player.length; i++) {
+			for(var j=0; j<linee.length; j++) {
+				linee[j].salita[i] = calcolaDistanzaPuntoLinea(player[i], linee[j]);
+			}
+		}
+	}
+
+	function calcolaMatriceIncontri() {
+		matrice = [];
+		var x, y, h, k;
+		for(x = cercaStart.lat(), h = 0; x < cercaEnd.lat(); x += cercaInc, h++) {
+			for(y = cercaStart.lng(), k = 0; y < cercaEnd.lng(); y += cercaInc, k++) {
+				/* calcolo il costo di raggiungere il punto per ogni player con ogni linea */
+				var dest = new google.maps.LatLng(x, y);
+				for(var j=0; j<linee.length; j++) {
+					linee[j].discesa = calcolaDistanzaPuntoLinea(dest, linee[j]);
+
+					for(var i=0; i<player.length; i++) { 
+						linee[j].viaggio[i] = abs(linee[j].salita[i].fermata - linee[j].discesa.fermata) 
+							* secondiAFermata;
+					}
+				}
+			
+				/* calcolo il costo minimo di raggiungere il punto per ogni player */
+				for(var i=0; i<player.length; i++) { 
+					var min = 999999999;
+					var linea = "??";
+					for(var j=0; j<linee.length; j++) {
+						var costo = linee[j].viaggio[i] + linee[j].salita[i].costo + linee[j].discesa.costo;
+						if(costo < min) {
+							min = costo;
+							linea = j;
+						}
+					}
+
+					if(matrice[h] == undefined) matrice[h] = [];
+					if(matrice[h][k] == undefined) {
+						matrice[h][k] = {};
+						matrice[h][k].costo = 0;
+						matrice[h][k].note = "";
+						matrice[h][k].marker = null;
+						matrice[h][k].linee = [];
+					}
+					matrice[h][k].linee[i] = linea;
+					matrice[h][k].costo += min;
+					linea = linee[linea].nome;
+                                        if((linea + "")[0] == "-") {
+						linea = linea + "";
+                                                linea = linea.replace("-", "M");
+                                        }
+					matrice[h][k].note += "Da Partenza" + (i+1) + ": linea " + linea + "<br>";
+				}
+			}
+		}
+	}
+
+	function stampaMatrice() {
+		var h, k, x, y;
+		var min = 999999, max = 0;
+
+		for(h = 0; h < matrice.length; h++) {
+			for(k = 0; k < matrice[h].length; k++) {
+				var value = Math.floor(matrice[h][k].costo);
+				if(value > max) max = value;
+				if(value < min) min = value;
+			}
+		}
+
+		h = 0; k = 0;
+		for(x = cercaStart.lat(), h = 0; x < cercaEnd.lat(); x += cercaInc, h++) {
+			for(y = cercaStart.lng(), k = 0; y < cercaEnd.lng(); y += cercaInc, k++) {
+				var coords = [
+					new google.maps.LatLng(x - (cercaInc/2), y - (cercaInc/2)),
+					new google.maps.LatLng(x + (cercaInc/2), y - (cercaInc/2)),
+					new google.maps.LatLng(x + (cercaInc/2), y + (cercaInc/2)),
+					new google.maps.LatLng(x - (cercaInc/2), y + (cercaInc/2)),
+					new google.maps.LatLng(x - (cercaInc/2), y - (cercaInc/2)),
+				];
+
+				var value = Math.floor(matrice[h][k].costo);
+				var colorIdx = Math.floor(((value - min) / (max - min)) * 256);
+				var color = '#00' + (colorIdx < 16 ? '0' : '') + colorIdx.toString(16) + '00';
+
+				var marker = new MarkerWithLabel({
+				 position: coords[0],
+				 draggable: false,
+				 raiseOnDrag: false,
+				 map: map,
+				 labelContent: matrice[h][k].note,
+				 labelAnchor: new google.maps.Point(30, 20),
+				 labelClass: "labels", // the CSS class for the label
+				 labelStyle: {opacity: 1.0},
+				 icon: " ",
+				 visible: false
+				});
+				var poly = new google.maps.Polygon({
+				    paths: coords,
+				    strokeColor: color,
+				    strokeOpacity: colorIdx / 256,
+				    strokeWeight: 0,
+				    fillColor: color,
+				    fillOpacity: colorIdx / 256,
+				});
+				poly.marker = marker;
+				poly.linee = matrice[h][k].linee;
+				google.maps.event.addListener(poly,'mouseover',function(event){
+					this.marker.setPosition(event.latLng);
+					this.marker.setVisible(true);
+					for(var i=0; i<player.length; i++)
+						disegnaLinea(linee[this.linee[i]]);
+				});
+				google.maps.event.addListener(poly,'mouseout',function(event){
+					this.marker.setVisible(false);
+					for(var i=0; i<player.length; i++)
+						nascondiLinea(linee[this.linee[i]]);
+				});
+				poly.setMap(map);
+			}
+		}
+	}
+
+	function trovaLinee() {
+		calcolaCostoSalite();
+
+		calcolaMatriceIncontri();
+
+		stampaMatrice();
+
+		document.getElementById("wait").style.display="none";
+	}
+
+    </script>
+  </head>
+  <body>
+    <table width=100%><tr><td>
+    <div id="info">
+	<div>
+		Partenza 1: <input type=text id="player1" value="piazza firenze, milano">
+	</div>
+	<div>
+		Partenza 2: <input type=text id="player2" value="piazzale lodi, milano">
+	</div>
+	<div>
+		<input type=button value="Trova un punto d'incontro!" onclick='
+			document.getElementById("wait").style.display="";
+			player = [];
+			playerCounter = 0;
+			for(var idx = 1; idx < playerMax + 1; idx ++) {
+				geocoder.geocode(
+					{
+						address: document.getElementById("player" + idx).value,
+						region: "it"
+					}, 
+					getRouteCallback
+				);
+			}
+		'>
+		<span id="wait" style="display: none;">Sto calcolando...</span>
+	</div>
+
+    </div>
+    </td><td align=right>
+    <script>
+	function informativa() {
+	    alert("Informativa d'uso, in breve:\n" +
+		"e' un'applicazione molto sperimentale, declino ogni responsabilita' "+
+		"nel caso in cui la usiate e poi arrivate altrove (o vi perdete, o "+
+		"non vi incontrate, ecc). Considera solo la rete ATM; non considera "+
+		"\"cambi di linea\"; inoltre i dati in uso potrebbero non essere aggiornati.\n"+
+		"Vedere la Content Policy standard di simonebaracchi.eu.\n\n"+ 
+		"Informativa di copyright:\n" +
+		"I dati relativi alle fermate contenuti di seguito " +
+		"si possono trovare alla pagina:\n" +
+		"http://www.muoversi.milano.it/web/portale-mobilita/bus-filobus-tram\n" +
+		"e sono rilasciati sotto licenza Creative Commons BY 3.0 " +
+		"come indicato alla pagina:\n" +
+		"http://www.muoversi.milano.it/web/portale-mobilita/note-legali\n" +
+		"da cui si riporta l'informativa di copyright:\n\n" + 
+		"\"I contenuti di questo sito sono rilasciati sotto " +
+		"Licenza Creative Commons (http://creativecommons.org/licenses/by/3.0/it/);\n"+
+		"salvo dove diversamente specificato.\n"+
+		"Questo significa che, ove non diversamente specificato, i contenuti " +
+		"di questo sito sono liberamente distribuibili e riutilizzabili, "+
+		"a patto che sia sempre citata la fonte e riportato l'indirizzo web "+
+		"della pagina originale.\"");
+	    }
+    </script>
+    <a href='javascript:informativa(0);'>Leggi l'informativa di copyright</a>
+    </td></tr></table>
+
+    <div id="map-canvas"/>
+
+  </body>
+</html>
